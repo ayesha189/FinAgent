@@ -13,23 +13,6 @@ An on-premise, multi-agent finance automation platform for invoice processing, t
 
 ---
 
-## Contents
-
-- [About the project](#about-the-project)
-- [Key principles](#key-principles)
-- [Roles and capabilities](#roles-and-capabilities)
-- [System architecture](#system-architecture)
-- [Technology stack](#technology-stack)
-- [Repository structure](#repository-structure)
-- [Getting started](#getting-started)
-- [Configuration](#configuration)
-- [Authentication and approval workflow](#authentication-and-approval-workflow)
-- [Security](#security)
-- [Implementation status](#implementation-status)
-- [Roadmap](#roadmap)
-- [Project information](#project-information)
-
----
 
 ## About the project
 
