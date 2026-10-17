@@ -8,10 +8,6 @@
 
 An on-premise, multi-agent finance automation platform for invoice processing, tax compliance, risk detection, bank reconciliation and forecasting, with every decision explained and recorded in a tamper-evident audit log.
 
-![Status](https://img.shields.io/badge/status-in%20development-F5B82E)
-![React](https://img.shields.io/badge/frontend-React%2019%20%2B%20TypeScript-1E4FD8)
-![FastAPI](https://img.shields.io/badge/backend-FastAPI-12B886)
-![Deployment](https://img.shields.io/badge/deployment-on--premise-0B2A6F)
 
 </div>
 
