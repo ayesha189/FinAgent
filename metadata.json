@@ -1,0 +1,6 @@
+{
+  "name": "FinAgent - Smarter Finance. Clearer Decisions",
+  "description": "AI-driven financial intelligence platform to analyze transactions, manage risk, ensure compliance, and deliver actionable insights.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
