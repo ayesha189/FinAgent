@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, Lock, ArrowRight, ShieldCheck, CheckCircle2, AlertCircle, MessageSquare, Send, X } from 'lucide-react';
+import { Mail, Lock, ArrowRight, ShieldCheck, CheckCircle2, AlertCircle, MessageSquare, Send, X, Eye, EyeOff } from 'lucide-react';
 import systemLogo from '../assets/images/finagent_system_logo.jpg';
 import {
   cacheLocalComplaint,
@@ -17,6 +17,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'info' | 'success'; text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
   const [complaint, setComplaint] = useState({
     name: '',
@@ -343,7 +344,7 @@ export default function LoginPage() {
               <ShieldCheck className="w-6 h-6" />
             </div>
             <h1 className="text-2xl font-bold text-[#0B2546]">Account Login</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <p className="text-slate-400 text-xs mt-1">
               Enter your credentials to access FinAgent
             </p>
           </div>
@@ -383,19 +384,32 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Password
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Password
+                </label>
+                <Link to="/forgot-password" className="text-[8px] text-sky-700 font-semibold hover:underline">
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative flex items-center">
                 <Lock className="absolute left-3.5 w-4 h-4 text-slate-400" />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
                   required
-                  className="w-full h-11 pl-10 pr-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-[#0B2546] focus:ring-2 focus:ring-[#0B2546]/10 text-slate-800"
+                  className="w-full h-11 pl-10 pr-11 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-[#0B2546] focus:ring-2 focus:ring-[#0B2546]/10 text-slate-800"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  {showPassword ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 
@@ -410,12 +424,30 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-6 text-center text-xs text-slate-500">
-            Forgot your password?{' '}
-            <Link to="/forgot-password" className="text-sky-700 font-semibold hover:underline">
-              Reset it here
+          {/* OR divider */}
+          <div className="my-6 flex items-center gap-3 text-xs text-slate-400">
+            <div className="flex-1 h-px bg-slate-200" />
+            <span>OR</span>
+            <div className="flex-1 h-px bg-slate-200" />
+          </div>
+
+          <div className="text-center text-sm text-slate-500">
+            Don&apos;t have an account?{' '}
+            <Link to="/register" className="text-sky-700 font-semibold hover:underline">
+              Sign up
             </Link>
           </div>
+
+          <p className="mt-5 text-center text-xs text-slate-500 leading-relaxed">
+            By signing in, you agree to our{' '}
+            <a href="#" className="text-sky-700 hover:underline">
+              Terms of Service
+            </a>{' '}
+            and{' '}
+            <a href="#" className="text-sky-700 hover:underline">
+              Privacy Policy
+            </a>
+          </p>
         </div>
       </main>
     </div>
