@@ -125,7 +125,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           <AdminServiceRow
             icon="database"
             metric="12 ms"
-            name="PostgreSQL Audit Ledger"
+            name="finagent"
           />
         </AdminPanel>
 

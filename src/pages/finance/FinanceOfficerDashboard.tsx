@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { LiveInvoice, LiveReview, LiveReconcile, LiveReports } from './LivePages';
 import { useNavigate } from 'react-router-dom';
 import './FinanceOfficerDashboard.css';
 import systemLogo from '../../assets/images/finagent_system_logo.jpg';
@@ -4228,10 +4229,10 @@ export default function FinanceOfficerDashboard() {
         )}
 
         {activeTab === 'dashboard' && <OverviewPage goTo={setActiveTab} />}
-        {activeTab === 'invoice' && <ProcessInvoicePage />}
-        {activeTab === 'review' && <ReviewQueuePage />}
-        {activeTab === 'reconcile' && <ReconciliationPage />}
-        {activeTab === 'reports' && <ReportsPage />}
+        {activeTab === 'invoice' && <LiveInvoice />}
+        {activeTab === 'review' && <LiveReview />}
+        {activeTab === 'reconcile' && <LiveReconcile />}
+        {activeTab === 'reports' && <LiveReports />}
       </main>
 
       {/* Logout Confirmation Dialog */}
