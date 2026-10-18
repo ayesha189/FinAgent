@@ -67,120 +67,23 @@ export default function LoginPage() {
         }
       }
 
-      // If backend returned specific status code (e.g. pending, rejected, blocked)
+      // Backend answered with an error: show it (no fake/dev login any more)
       const code = data?.detail?.code;
       if (code === 'pending') {
-        setStatusMessage({
-          type: 'info',
-          text: 'Your account is awaiting administrator approval before you can sign in.',
-        });
-        setIsLoading(false);
-        return;
+        setStatusMessage({ type: 'info', text: 'Your account is awaiting administrator approval before you can sign in.' });
       } else if (code === 'rejected') {
+        setStatusMessage({ type: 'error', text: 'Your registration was not approved. Please contact your administrator.' });
+      } else if (code === 'blocked' || res.status === 403) {
+        setStatusMessage({ type: 'error', text: 'This account has been deactivated. Please contact your administrator.' });
+      } else {
         setStatusMessage({
           type: 'error',
-          text: 'Your registration was not approved. Please contact your administrator.',
+          text: typeof data?.detail === 'string' ? data.detail : 'Login failed. Please try again.',
         });
-        setIsLoading(false);
-        return;
-      } else if (code === 'blocked') {
-        setStatusMessage({
-          type: 'error',
-          text: 'This account has been deactivated. Please contact your administrator.',
-        });
-        setIsLoading(false);
-        return;
       }
     } catch {
-      // Backend not running locally - support frontend preview/dev authentication
+      setStatusMessage({ type: 'error', text: 'Cannot reach the backend. Is the server running?' });
     }
-
-    // Local / Dev Fallback: Primary Administrator Check
-    if (cleanEmail === 'finagent@finagent.local' || cleanEmail.includes('admin')) {
-      if (password.length >= 6) {
-        localStorage.setItem('finagent_token', 'dev-primary-admin-jwt-token');
-        localStorage.setItem('finagent_role', 'administrator');
-        localStorage.setItem('finagent_name', 'Primary Administrator');
-        localStorage.setItem('finagent_is_primary', 'true');
-
-        setStatusMessage({
-          type: 'success',
-          text: 'Authentication verified. Redirecting to Administrator Console...',
-        });
-
-        setTimeout(() => {
-          navigate('/admin/dashboard');
-        }, 500);
-        return;
-      } else {
-        setStatusMessage({
-          type: 'error',
-          text: 'Invalid password. For the primary administrator, enter at least 8 characters (default: 12341234).',
-        });
-        setIsLoading(false);
-        return;
-      }
-    }
-
-    // Local / Dev Fallback: Auditor Check
-    if (cleanEmail === 'auditor@finagent.local') {
-      if (password.length >= 6) {
-        localStorage.setItem('finagent_token', 'dev-auditor-jwt-token');
-        localStorage.setItem('finagent_role', 'auditor');
-        localStorage.setItem('finagent_name', 'Zainab Fatima');
-        localStorage.setItem('finagent_is_primary', 'false');
-
-        setStatusMessage({
-          type: 'success',
-          text: 'Authentication verified. Redirecting to Auditor Dashboard...',
-        });
-
-        setTimeout(() => {
-          navigate('/auditor/dashboard');
-        }, 500);
-        return;
-      } else {
-        setStatusMessage({
-          type: 'error',
-          text: 'Invalid password. Please enter at least 8 characters (default: 12341234).',
-        });
-        setIsLoading(false);
-        return;
-      }
-    }
-
-    // Local / Dev Fallback: Finance Officer Check
-    if (cleanEmail.includes('finance') || cleanEmail.includes('officer') || cleanEmail.includes('amara') || cleanEmail === 's.jenkins@enterprise.com') {
-      if (password.length >= 6) {
-        localStorage.setItem('finagent_token', 'dev-finance-officer-jwt-token');
-        localStorage.setItem('finagent_role', 'finance_officer');
-        localStorage.setItem('finagent_name', 'Amara Mensah');
-        localStorage.setItem('finagent_is_primary', 'false');
-
-        setStatusMessage({
-          type: 'success',
-          text: 'Authentication verified. Redirecting to Finance Officer Dashboard...',
-        });
-
-        setTimeout(() => {
-          navigate('/officer/dashboard');
-        }, 500);
-        return;
-      } else {
-        setStatusMessage({
-          type: 'error',
-          text: 'Invalid password. Please enter at least 8 characters (default: 12341234).',
-        });
-        setIsLoading(false);
-        return;
-      }
-    }
-
-    // If regular user logging in without prior approval
-    setStatusMessage({
-      type: 'info',
-      text: 'Authentication check: Pending approval. Your access request is currently under review by the Administrator.',
-    });
     setIsLoading(false);
   }
 
