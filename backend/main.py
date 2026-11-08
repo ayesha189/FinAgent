@@ -1,11 +1,11 @@
 import os, json
 from contextlib import asynccontextmanager
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 import audit
@@ -39,7 +39,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="FinAgent Backend", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+       CORSMiddleware,
+       allow_origins=["http://localhost:3000", "http://localhost:5173"],
+       allow_methods=["*"],
+       allow_headers=["*"],
+)
 
 
 def get_settings(db):
@@ -84,16 +89,38 @@ class LoginIn(BaseModel):
 
 
 @app.post("/auth/login")
+@app.post("/auth/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     ident = (body.email or body.username or "").strip().lower()
     user = db.query(User).filter(User.email == ident).first()
     if not user or not check_password(body.password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
     if user.status != "active":
-        raise HTTPException(403, "Account is blocked")
+        raise HTTPException(403, {"code": user.status})
     audit.log(db, user.id, "login", "user", user.id)
     return {"access_token": create_token(user), "token_type": "bearer", "role": user.role, "name": user.name}
 
+class RegisterIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=100)
+    email: str = Field(max_length=150)
+    password: str = Field(min_length=8, max_length=72)
+    role: Literal["finance_officer", "auditor"]
+
+
+@app.post("/auth/register", status_code=201)
+def register(b: RegisterIn, db: Session = Depends(get_db)):
+    email = b.email.strip().lower()
+    if "@" not in email or " " in email:
+        raise HTTPException(422, "Please enter a valid email address")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(409, "An account with this email already exists")
+    nu = User(name=b.name.strip(), email=email, password_hash=hash_password(b.password),
+              role=b.role, status="pending")
+    db.add(nu)
+    db.commit()
+    audit.log(db, nu.id, "register", "user", nu.id, f"requested role={b.role}")
+    return {"ok": True}
 
 @app.get("/auth/me")
 def me(user: User = Depends(current_user)):
