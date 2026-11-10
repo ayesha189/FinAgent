@@ -173,6 +173,33 @@ def patch_user(uid: int, b: UserPatch, db: Session = Depends(get_db), u: User = 
     audit.log(db, u.id, "update_user", "user", uid, b.model_dump_json(exclude={"password"}))
     return {"ok": True}
 
+class DecisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approve", "reject"]
+    role: Optional[Literal["finance_officer", "auditor"]] = None
+
+
+@app.get("/admin/registrations")
+def pending_registrations(db: Session = Depends(get_db), u: User = Depends(require(ADMIN))):
+    users = db.query(User).filter(User.status == "pending").order_by(User.id).all()
+    return [{"user_id": x.id, "name": x.name, "email": x.email, "role": x.role,
+             "created_at": x.created_at} for x in users]
+
+@app.patch("/admin/registrations/{uid}")
+def decide_registration(uid: int, b: DecisionBody, db: Session = Depends(get_db),
+                        u: User = Depends(require(ADMIN))):
+    t = db.get(User, uid)
+    if not t or t.status != "pending":
+        raise HTTPException(404, "No pending registration with this id")
+    if b.decision == "approve":
+        if b.role:
+            t.role = b.role
+        t.status = "active"
+    else:
+        t.status = "rejected"
+    db.commit()
+    audit.log(db, u.id, f"registration_{b.decision}", "user", uid, t.email)
+    return {"user_id": uid, "status": t.status}
 
 @app.get("/admin/settings")
 def read_settings(db: Session = Depends(get_db), u: User = Depends(require(ADMIN, FO))):

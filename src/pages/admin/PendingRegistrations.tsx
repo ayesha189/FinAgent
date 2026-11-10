@@ -37,30 +37,6 @@ const ROLE_STYLE: Record<string, string> = {
   administrator: "bg-amber-50 text-amber-800 ring-amber-300",
 };
 
-const INITIAL_DEMO_REQUESTS: RegistrationUser[] = [
-  {
-    user_id: 101,
-    name: "Sarah Jenkins",
-    email: "s.jenkins@enterprise.com",
-    role: "finance_officer",
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-  },
-  {
-    user_id: 102,
-    name: "David Chen",
-    email: "d.chen@auditcorp.io",
-    role: "auditor",
-    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-  {
-    user_id: 103,
-    name: "Marcus Vance",
-    email: "m.vance@finagent.local",
-    role: "administrator",
-    created_at: new Date(Date.now() - 3600000 * 18).toISOString(),
-  },
-];
-
 const initials = (n: string) =>
   n
     .split(/\s+/)
@@ -74,18 +50,7 @@ const fmt = (d: string) =>
 export default function PendingRegistrations() {
   const navigate = useNavigate();
   const isPrimary = store("finagent_is_primary") === "true";
-
-  const [rows, setRows] = useState<RegistrationUser[]>(() => {
-    const saved = localStorage.getItem("finagent_pending_rows");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // ignore
-      }
-    }
-    return INITIAL_DEMO_REQUESTS;
-  });
+  const [rows, setRows] = useState<RegistrationUser[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -117,24 +82,15 @@ export default function PendingRegistrations() {
     [navigate]
   );
 
-  const load = useCallback(async () => {
+    const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const data = await api("/admin/registrations");
       setRows(data);
-      localStorage.setItem("finagent_pending_rows", JSON.stringify(data));
-    } catch {
-      // Backend not running locally - load demo requests filtered for primary admin
-      const saved = localStorage.getItem("finagent_pending_rows");
-      if (saved) {
-        try {
-          setRows(JSON.parse(saved));
-        } catch {
-          setRows(INITIAL_DEMO_REQUESTS);
-        }
-      } else {
-        setRows(INITIAL_DEMO_REQUESTS);
+    } catch (e) {
+      if ((e as Error).message !== "auth") {
+        setError("Could not load registrations. Is the backend running?");
       }
     } finally {
       setLoading(false);
