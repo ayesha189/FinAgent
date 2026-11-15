@@ -45,6 +45,12 @@ const ROLE_FROM_API: Record<string, SystemUser['role']> = {
   administrator: 'Administrator',
 };
 
+const ROLE_TO_API: Record<SystemUser['role'], string> = {
+  'Finance Officer': 'finance_officer',
+  Auditor: 'auditor',
+  Administrator: 'administrator',
+};
+
 const STATUS_FROM_API: Record<string, SystemUser['status']> = {
   active: 'Active',
   blocked: 'Blocked',
@@ -65,10 +71,11 @@ export const UserManagementPage: React.FC = () => {
   const [newUser, setNewUser] = useState({
     name: '',
     email: '',
+    password: '',
     role: 'Finance Officer' as SystemUser['role'],
   });
 
-    const loadUsers = async () => {
+  const loadUsers = async () => {
     try {
       const token = localStorage.getItem('finagent_token') ?? sessionStorage.getItem('finagent_token') ?? '';
       const res = await fetch(`${API_URL}/admin/users`, {
@@ -184,7 +191,7 @@ export const UserManagementPage: React.FC = () => {
   const auditorCount = users.filter((u) => u.role === 'Auditor' && u.status === 'Active').length;
   const adminCount = users.filter((u) => u.role === 'Administrator').length;
 
-    const callApi = async (path: string, method: string, body: object) => {
+  const callApi = async (path: string, method: string, body: object) => {
     const token = localStorage.getItem('finagent_token') ?? sessionStorage.getItem('finagent_token') ?? '';
     const res = await fetch(`${API_URL}${path}`, {
       method,
@@ -236,30 +243,24 @@ export const UserManagementPage: React.FC = () => {
     }
   };
 
-  const handleCreateUser = (e: React.FormEvent) => {
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUser.name || !newUser.email) return;
+    if (!newUser.name || !newUser.email || !newUser.password) return;
 
-    const created: SystemUser = {
-      id: `USR-00${users.length + 1}`,
-      name: newUser.name,
-      initials: newUser.name
-        .split(' ')
-        .map((p) => p[0])
-        .slice(0, 2)
-        .join('')
-        .toUpperCase(),
-      email: newUser.email,
-      role: newUser.role,
-      status: 'Active',
-      registered: 'Today',
-      login: 'Not yet logged in',
-    };
-
-    setUsers([created, ...users]);
-    setShowAddModal(false);
-    setNewUser({ name: '', email: '', role: 'Finance Officer' });
-    setFeedback(`User ${created.name} (${created.role}) created and activated successfully (FR-UM-04).`);
+    try {
+      await callApi('/admin/users', 'POST', {
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        role: ROLE_TO_API[newUser.role],
+      });
+      await loadUsers();
+      setShowAddModal(false);
+      setNewUser({ name: '', email: '', password: '', role: 'Finance Officer' });
+      setFeedback(`User ${newUser.name} (${newUser.role}) created and activated successfully (FR-UM-04).`);
+    } catch (err) {
+      setFeedback(`Could not create user: ${(err as Error).message}`);
+    }
   };
 
   return (
@@ -537,6 +538,17 @@ export const UserManagementPage: React.FC = () => {
                     type="email"
                     value={newUser.email}
                     onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                  />
+                </label>
+                <label className="field full">
+                  <span>Temporary Password *</span>
+                  <input
+                    required
+                    minLength={8}
+                    placeholder="At least 8 characters"
+                    type="password"
+                    value={newUser.password}
+                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   />
                 </label>
                 <label className="field full">

@@ -7,14 +7,18 @@ import {
   Shield,
   TrendingUp,
   Zap,
-  Info,
   ArrowRight,
   ChevronDown,
-  Settings,
   ShieldAlert
 } from 'lucide-react';
 import './RegistrationPage.css';
 import laptopImg from '../assets/images/finagent_laptop_dashboard_1791527983999.jpg';
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
+
+const ROLE_TO_API: Record<string, string> = {
+  'Finance Officer': 'finance_officer',
+  Auditor: 'auditor',
+};
 
 export default function RegistrationPage() {
   const [form, setForm] = useState({
@@ -44,15 +48,12 @@ export default function RegistrationPage() {
     setIsDropdownOpen(false);
   }
 
-  function handleSubmit(e: React.FormEvent) {
+    async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setMessage(null);
 
     if (!form.role) {
-      setMessage({
-        type: 'error',
-        text: 'Please select your role from the list.',
-      });
+      setMessage({ type: 'error', text: 'Please select your role from the list.' });
       return;
     }
 
@@ -65,29 +66,42 @@ export default function RegistrationPage() {
     }
 
     if (form.password.length < 8) {
-      setMessage({
-        type: 'error',
-        text: 'Password must contain at least 8 characters.',
-      });
+      setMessage({ type: 'error', text: 'Password must contain at least 8 characters.' });
       return;
     }
 
     setIsSubmitting(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.fullName.trim(),
+          email: form.email.trim().toLowerCase(),
+          password: form.password,
+          role: ROLE_TO_API[form.role],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
 
-    setTimeout(() => {
-      setIsSubmitting(false);
+      if (!res.ok) {
+        let text = 'Registration failed. Please try again.';
+        if (typeof data.detail === 'string') text = data.detail;
+        else if (Array.isArray(data.detail)) text = 'Please check your details and try again.';
+        setMessage({ type: 'error', text });
+        return;
+      }
+
       setMessage({
         type: 'success',
         text: 'Your access request has been submitted. Your account is currently pending administrator approval. You will be able to log in once reviewed.',
       });
-      setForm({
-        fullName: '',
-        email: '',
-        password: '',
-        confirmPassword: '',
-        role: '',
-      });
-    }, 600);
+      setForm({ fullName: '', email: '', password: '', confirmPassword: '', role: '' });
+    } catch {
+      setMessage({ type: 'error', text: 'Could not reach the server. Is the backend running?' });
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -295,7 +309,6 @@ export default function RegistrationPage() {
                       <>
                         {form.role === 'Finance Officer' && <User className="w-4 h-4 text-sky-600" />}
                         {form.role === 'Auditor' && <ShieldAlert className="w-4 h-4 text-sky-600" />}
-                        {form.role === 'Administrator' && <Settings className="w-4 h-4 text-sky-600" />}
                         <span className="font-medium text-[#0B2545]">{form.role}</span>
                       </>
                     ) : (
@@ -330,16 +343,6 @@ export default function RegistrationPage() {
                     >
                       <ShieldAlert className="role-opt-icon" />
                       <span>Auditor</span>
-                    </div>
-
-                    <div
-                      className={`role-option ${form.role === 'Administrator' ? 'active' : ''}`}
-                      onClick={() => handleSelectRole('Administrator')}
-                      role="option"
-                      aria-selected={form.role === 'Administrator'}
-                    >
-                      <Settings className="role-opt-icon" />
-                      <span>Administrator</span>
                     </div>
                   </div>
                 )}

@@ -114,7 +114,6 @@ export default function PendingRegistrations() {
     localStorage.removeItem("finagent_is_primary");
     navigate("/login");
   };
-
   const decide = async (u: RegistrationUser, decision: "approve" | "reject") => {
     setBusy(u.user_id);
     try {
@@ -123,20 +122,13 @@ export default function PendingRegistrations() {
         body.role = roleEdit[u.user_id];
       }
 
-      try {
-        await api(`/admin/registrations/${u.user_id}`, {
-          method: "PATCH",
-          body: JSON.stringify(body),
-        });
-      } catch {
-        // local fallback
-      }
-
-      setRows((prev) => {
-        const next = prev.filter((x) => x.user_id !== u.user_id);
-        localStorage.setItem("finagent_pending_rows", JSON.stringify(next));
-        return next;
+      await api(`/admin/registrations/${u.user_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
       });
+
+      // Only reached if the backend said OK
+      setRows((prev) => prev.filter((x) => x.user_id !== u.user_id));
 
       setToast({
         ok: true,
@@ -146,7 +138,7 @@ export default function PendingRegistrations() {
       });
     } catch (e: unknown) {
       const err = e as Error;
-      if (err.message !== "auth") setToast({ ok: false, text: err.message });
+      if (err.message !== "auth") setToast({ ok: false, text: `Could not ${decision} ${u.name}: ${err.message}` });
     } finally {
       setBusy(null);
       setConfirmReject(null);
