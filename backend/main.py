@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Backgroun
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 import audit
@@ -107,6 +108,8 @@ class RegisterIn(BaseModel):
     role: Literal["finance_officer", "auditor"]
     
 EMAIL_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
+NTN_PATTERN = re.compile(r"^[0-9-]{7,15}$")
+
 @app.post("/auth/register", status_code=201)
 def register(b: RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
     email = b.email.strip().lower()
@@ -241,6 +244,7 @@ class DecisionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["approve", "reject"]
     role: Optional[Literal["finance_officer", "auditor"]] = None
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 @app.get("/admin/registrations")
@@ -272,7 +276,8 @@ async def _send_mail(recipients: list, subject: str, body: str):
         print(f"[mail] could not send email to {recipients}: {e}")
 
 
-async def send_decision_email(to_email: str, name: str, decision: str, role: str):
+async def send_decision_email(to_email: str, name: str, decision: str, role: str,
+                              reason: Optional[str] = None):
     if decision == "approve":
         subject = "Your FinAgent account has been approved"
         body = (f"Hello {name},\n\n"
@@ -281,12 +286,13 @@ async def send_decision_email(to_email: str, name: str, decision: str, role: str
                 f"Regards,\nFinAgent Team")
     else:
         subject = "Your FinAgent registration was not approved"
+        reason_line = f"Reason given by the administrator: {reason}\n\n" if reason else ""
         body = (f"Hello {name},\n\n"
-                f"Your FinAgent registration was not approved by the administrator. "
+                f"Your FinAgent registration was not approved by the administrator.\n\n"
+                f"{reason_line}"
                 f"Please contact your administrator if you think this is a mistake.\n\n"
                 f"Regards,\nFinAgent Team")
     await _send_mail([to_email], subject, body)
-
 
 async def send_admin_notice_email(admin_emails: list, name: str, email: str, role: str):
     link = os.getenv("FRONTEND_URL", "http://localhost:3000") + "/admin/registrations"
@@ -314,8 +320,10 @@ def decide_registration(uid: int, b: DecisionBody, background: BackgroundTasks,
     else:
         t.status = "rejected"
     db.commit()
-    audit.log(db, u.id, f"registration_{b.decision}", "user", uid, t.email)
-    background.add_task(send_decision_email, t.email, t.name, b.decision, t.role)
+    reason = b.reason.strip() if (b.decision == "reject" and b.reason and b.reason.strip()) else None
+    detail = f"{t.email} | reason: {reason}" if reason else t.email
+    audit.log(db, u.id, f"registration_{b.decision}", "user", uid, detail)
+    background.add_task(send_decision_email, t.email, t.name, b.decision, t.role, reason)
     return {"user_id": uid, "status": t.status}
 
 @app.get("/admin/settings")
@@ -350,9 +358,29 @@ def list_vendors(db: Session = Depends(get_db), u: User = Depends(require(ADMIN,
 
 @app.post("/admin/vendors")
 def add_vendor(b: VendorIn, db: Session = Depends(get_db), u: User = Depends(require(ADMIN))):
-    v = Vendor(**b.model_dump())
+    name = (b.name or "").strip()
+    ntn = (b.tax_number or "").strip()
+    email = (b.contact_email or "").strip().lower()
+
+    # All three fields are required
+    if not name or not ntn or not email:
+        raise HTTPException(422, "Vendor name, NTN and accounts email are all required")
+    if not NTN_PATTERN.match(ntn):
+        raise HTTPException(422, "Please enter a valid NTN, for example 1234567-8")
+    if len(email) > 150 or not EMAIL_PATTERN.match(email):
+        raise HTTPException(422, "Please enter a valid accounts email")
+
+    # No duplicates: name and email are compared ignoring upper/lower case
+    if db.query(Vendor).filter(func.lower(Vendor.name) == name.lower()).first():
+        raise HTTPException(409, "A vendor with this name already exists")
+    if db.query(Vendor).filter(Vendor.tax_number == ntn).first():
+        raise HTTPException(409, "A vendor with this NTN already exists")
+    if db.query(Vendor).filter(func.lower(Vendor.contact_email) == email).first():
+        raise HTTPException(409, "A vendor with this email already exists")
+
+    v = Vendor(name=name, tax_number=ntn, contact_email=email, blacklisted=b.blacklisted)
     db.add(v); db.commit()
-    audit.log(db, u.id, "create_vendor", "vendor", v.id, b.name)
+    audit.log(db, u.id, "create_vendor", "vendor", v.id, name)
     return row(v)
 
 
@@ -361,6 +389,24 @@ def patch_vendor(vid: int, b: dict, db: Session = Depends(get_db), u: User = Dep
     v = db.get(Vendor, vid)
     if not v:
         raise HTTPException(404, "Vendor not found")
+
+    if "tax_number" in b:
+        ntn = str(b["tax_number"] or "").strip()
+        if not NTN_PATTERN.match(ntn):
+            raise HTTPException(422, "Please enter a valid NTN, for example 1234567-8")
+        if db.query(Vendor).filter(Vendor.tax_number == ntn, Vendor.id != vid).first():
+            raise HTTPException(409, "A vendor with this NTN already exists")
+        b["tax_number"] = ntn
+    if "contact_email" in b:
+        email = str(b["contact_email"] or "").strip().lower()
+        if len(email) > 150 or not EMAIL_PATTERN.match(email):
+            raise HTTPException(422, "Please enter a valid accounts email")
+        if db.query(Vendor).filter(func.lower(Vendor.contact_email) == email, Vendor.id != vid).first():
+            raise HTTPException(409, "A vendor with this email already exists")
+        b["contact_email"] = email
+    if "blacklisted" in b and not isinstance(b["blacklisted"], bool):
+        raise HTTPException(422, "blacklisted must be true or false")
+
     for k in ("tax_number", "contact_email", "blacklisted"):
         if k in b:
             setattr(v, k, b[k])

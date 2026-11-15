@@ -68,6 +68,7 @@ export const UserManagementPage: React.FC = () => {
   const [complaints, setComplaints] = useState<ComplaintRecord[]>(readLocalComplaints);
   const [complaintsNotice, setComplaintsNotice] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [modalError, setModalError] = useState('');
   const [newUser, setNewUser] = useState({
     name: '',
     email: '',
@@ -233,7 +234,10 @@ export const UserManagementPage: React.FC = () => {
     const target = users.find((u) => u.email === email);
     if (!target?.dbId) return;
     try {
-      await callApi(`/admin/registrations/${target.dbId}`, 'PATCH', { decision: 'reject' });
+            await callApi(`/admin/registrations/${target.dbId}`, 'PATCH', {
+        decision: 'reject',
+        reason: rejectReason.trim() || undefined,
+      });
       await loadUsers();
       setRejectEmail(null);
       setRejectReason('');
@@ -246,7 +250,7 @@ export const UserManagementPage: React.FC = () => {
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUser.name || !newUser.email || !newUser.password) return;
-
+    setModalError('');
     try {
       await callApi('/admin/users', 'POST', {
         name: newUser.name,
@@ -259,7 +263,7 @@ export const UserManagementPage: React.FC = () => {
       setNewUser({ name: '', email: '', password: '', role: 'Finance Officer' });
       setFeedback(`User ${newUser.name} (${newUser.role}) created and activated successfully (FR-UM-04).`);
     } catch (err) {
-      setFeedback(`Could not create user: ${(err as Error).message}`);
+        setModalError(`Could not create user: ${(err as Error).message}`);
     }
   };
 
@@ -269,7 +273,7 @@ export const UserManagementPage: React.FC = () => {
       <AdminPageHead
         title="User Management & Role Permissions"
         actions={
-          <AdminButton icon="plus" kind="primary" onClick={() => setShowAddModal(true)}>
+            <AdminButton icon="plus" kind="primary" onClick={() => { setModalError(''); setShowAddModal(true); }}>
             Create User Account
           </AdminButton>
         }
@@ -310,9 +314,11 @@ export const UserManagementPage: React.FC = () => {
         />
       </div>
 
-      {feedback && (
+            {feedback && (
         <div style={{ marginBottom: 16 }}>
-          <AdminFeedback tone="success">{feedback}</AdminFeedback>
+          <AdminFeedback tone={feedback.startsWith('Could not') ? 'error' : 'success'}>
+            {feedback}
+          </AdminFeedback>
         </div>
       )}
 
@@ -518,6 +524,11 @@ export const UserManagementPage: React.FC = () => {
               Provision a new account with role-based access. Passwords are encrypted with bcrypt
               and authenticated via JWT (FR-UM-01).
             </p>
+              {modalError && (
+              <div style={{ marginTop: 12 }}>
+                <AdminFeedback tone="error">{modalError}</AdminFeedback>
+              </div>
+            )}
             <form onSubmit={handleCreateUser} style={{ marginTop: 14 }}>
               <div className="form-grid" style={{ padding: 0 }}>
                 <label className="field full">
@@ -566,7 +577,7 @@ export const UserManagementPage: React.FC = () => {
                 </label>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-                <AdminButton onClick={() => setShowAddModal(false)}>Cancel</AdminButton>
+                <AdminButton onClick={() => { setShowAddModal(false); setModalError(''); }}>Cancel</AdminButton>
                 <AdminButton kind="primary" type="submit">
                   Create User
                 </AdminButton>
