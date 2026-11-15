@@ -10,6 +10,11 @@ import {
 import './RegistrationPage.css';
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
+const EMAIL_PATTERN = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
+
+function isValidEmail(value: string): boolean {
+  return value.length <= 254 && EMAIL_PATTERN.test(value);
+}
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -29,11 +34,20 @@ export default function LoginPage() {
   const [isSubmittingComplaint, setIsSubmittingComplaint] = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
+        e.preventDefault();
     setStatusMessage(null);
-    setIsLoading(true);
 
     const cleanEmail = email.trim().toLowerCase();
+
+    if (!isValidEmail(cleanEmail)) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Please enter a valid email address, for example name@organization.com. Emojis and special characters are not allowed.',
+      });
+      return;
+    }
+
+    setIsLoading(true);
 
     // Check if live backend API is available
     try {

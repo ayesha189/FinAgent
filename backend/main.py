@@ -1,4 +1,4 @@
-import os, json
+import os, json, re
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from typing import Optional, Literal
@@ -106,11 +106,12 @@ class RegisterIn(BaseModel):
     email: str = Field(max_length=150)
     password: str = Field(min_length=8, max_length=72)
     role: Literal["finance_officer", "auditor"]
-
+    
+EMAIL_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
 @app.post("/auth/register", status_code=201)
 def register(b: RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
     email = b.email.strip().lower()
-    if "@" not in email or " " in email:
+    if len(email) > 254 or not EMAIL_PATTERN.match(email):
         raise HTTPException(422, "Please enter a valid email address")
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(409, "An account with this email already exists")

@@ -14,7 +14,11 @@ import {
 import './RegistrationPage.css';
 import laptopImg from '../assets/images/finagent_laptop_dashboard_1791527983999.jpg';
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
+const EMAIL_PATTERN = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
 
+function isValidEmail(value: string): boolean {
+  return value.length <= 254 && EMAIL_PATTERN.test(value);
+}
 const ROLE_TO_API: Record<string, string> = {
   'Finance Officer': 'finance_officer',
   Auditor: 'auditor',
@@ -51,7 +55,13 @@ export default function RegistrationPage() {
     async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setMessage(null);
-
+    if (!isValidEmail(form.email.trim().toLowerCase())) {
+      setMessage({
+        type: 'error',
+        text: 'Please enter a valid email address, for example name@organization.com. Emojis and special characters are not allowed.',
+      });
+      return;
+    }
     if (!form.role) {
       setMessage({ type: 'error', text: 'Please select your role from the list.' });
       return;
