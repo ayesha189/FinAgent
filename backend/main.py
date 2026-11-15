@@ -2,12 +2,12 @@ import os, json
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from typing import Optional, Literal
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
-
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 import audit
 import agents
 from database import Base, engine, get_db, SessionLocal
@@ -107,9 +107,8 @@ class RegisterIn(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     role: Literal["finance_officer", "auditor"]
 
-
 @app.post("/auth/register", status_code=201)
-def register(b: RegisterIn, db: Session = Depends(get_db)):
+def register(b: RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
     email = b.email.strip().lower()
     if "@" not in email or " " in email:
         raise HTTPException(422, "Please enter a valid email address")
@@ -120,6 +119,12 @@ def register(b: RegisterIn, db: Session = Depends(get_db)):
     db.add(nu)
     db.commit()
     audit.log(db, nu.id, "register", "user", nu.id, f"requested role={b.role}")
+
+    # Tell every active administrator (read from the database, not from the code)
+    admin_emails = [a.email for a in db.query(User)
+                    .filter(User.role == ADMIN, User.status == "active").all()]
+    if admin_emails:
+        background.add_task(send_admin_notice_email, admin_emails, nu.name, nu.email, nu.role)
     return {"ok": True}
 
 @app.get("/auth/me")
@@ -184,9 +189,61 @@ def pending_registrations(db: Session = Depends(get_db), u: User = Depends(requi
     users = db.query(User).filter(User.status == "pending").order_by(User.id).all()
     return [{"user_id": x.id, "name": x.name, "email": x.email, "role": x.role,
              "created_at": x.created_at} for x in users]
+    
+def _mail_conf():
+    return ConnectionConfig(
+        MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
+        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
+        MAIL_FROM=os.getenv("MAIL_FROM", ""),
+        MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com"),
+        MAIL_PORT=int(os.getenv("MAIL_PORT", "587")),
+        MAIL_STARTTLS=True,
+        MAIL_SSL_TLS=False,
+        USE_CREDENTIALS=True,
+    )
 
+
+async def _send_mail(recipients: list, subject: str, body: str):
+    """One place that sends mail. A failure is only printed, it never blocks the request."""
+    try:
+        message = MessageSchema(subject=subject, recipients=recipients, body=body,
+                                subtype=MessageType.plain)
+        await FastMail(_mail_conf()).send_message(message)
+    except Exception as e:
+        print(f"[mail] could not send email to {recipients}: {e}")
+
+
+async def send_decision_email(to_email: str, name: str, decision: str, role: str):
+    if decision == "approve":
+        subject = "Your FinAgent account has been approved"
+        body = (f"Hello {name},\n\n"
+                f"Your FinAgent registration has been approved. "
+                f"You can now sign in as {role.replace('_', ' ').title()}.\n\n"
+                f"Regards,\nFinAgent Team")
+    else:
+        subject = "Your FinAgent registration was not approved"
+        body = (f"Hello {name},\n\n"
+                f"Your FinAgent registration was not approved by the administrator. "
+                f"Please contact your administrator if you think this is a mistake.\n\n"
+                f"Regards,\nFinAgent Team")
+    await _send_mail([to_email], subject, body)
+
+
+async def send_admin_notice_email(admin_emails: list, name: str, email: str, role: str):
+    link = os.getenv("FRONTEND_URL", "http://localhost:3000") + "/admin/registrations"
+    subject = "New FinAgent registration waiting for approval"
+    body = (f"Hello,\n\n"
+            f"A new registration is waiting for your approval.\n\n"
+            f"Name: {name}\n"
+            f"Email: {email}\n"
+            f"Requested role: {role.replace('_', ' ').title()}\n\n"
+            f"Review it here: {link}\n\n"
+            f"Regards,\nFinAgent System")
+    await _send_mail(admin_emails, subject, body)
+        
 @app.patch("/admin/registrations/{uid}")
-def decide_registration(uid: int, b: DecisionBody, db: Session = Depends(get_db),
+def decide_registration(uid: int, b: DecisionBody, background: BackgroundTasks,
+                        db: Session = Depends(get_db),
                         u: User = Depends(require(ADMIN))):
     t = db.get(User, uid)
     if not t or t.status != "pending":
@@ -199,6 +256,7 @@ def decide_registration(uid: int, b: DecisionBody, db: Session = Depends(get_db)
         t.status = "rejected"
     db.commit()
     audit.log(db, u.id, f"registration_{b.decision}", "user", uid, t.email)
+    background.add_task(send_decision_email, t.email, t.name, b.decision, t.role)
     return {"user_id": uid, "status": t.status}
 
 @app.get("/admin/settings")
