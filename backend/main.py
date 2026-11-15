@@ -1,6 +1,6 @@
-import os, json, re
+import os, json, re, hashlib, secrets
+from datetime import date, datetime, timedelta
 from contextlib import asynccontextmanager
-from datetime import date, datetime
 from typing import Optional, Literal
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,7 +89,6 @@ class LoginIn(BaseModel):
 
 
 @app.post("/auth/login")
-@app.post("/auth/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     ident = (body.email or body.username or "").strip().lower()
     user = db.query(User).filter(User.email == ident).first()
@@ -126,6 +125,65 @@ def register(b: RegisterIn, background: BackgroundTasks, db: Session = Depends(g
                     .filter(User.role == ADMIN, User.status == "active").all()]
     if admin_emails:
         background.add_task(send_admin_notice_email, admin_emails, nu.name, nu.email, nu.role)
+    return {"ok": True}
+
+class ResetRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str
+
+
+class ResetCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    password: str = Field(min_length=8, max_length=72)
+
+
+async def send_reset_email(to_email: str, name: str, token: str):
+    link = os.getenv("FRONTEND_URL", "http://localhost:3000") + f"/reset-password?token={token}"
+    body = (f"Hello {name},\n\n"
+            f"We received a request to reset your FinAgent password.\n"
+            f"Click the link below to choose a new password. It works once and expires in 30 minutes.\n\n"
+            f"{link}\n\n"
+            f"If you did not ask for this, you can ignore this email. Your password will not change.\n\n"
+            f"Regards,\nFinAgent Team")
+    await _send_mail([to_email], "Reset your FinAgent password", body)
+
+
+@app.post("/auth/password-reset/request")
+def password_reset_request(b: ResetRequestIn, background: BackgroundTasks,
+                           db: Session = Depends(get_db)):
+    email = b.email.strip().lower()
+    user = db.query(User).filter(User.email == email, User.status == "active").first()
+    if user:
+        # Cancel older unused links, then create a new one
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used.is_(False)).update({"used": True})
+        token = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(
+            user_id=user.id,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expires_at=datetime.utcnow() + timedelta(minutes=30)))
+        db.commit()
+        audit.log(db, user.id, "password_reset_requested", "user", user.id, "reset link emailed")
+        background.add_task(send_reset_email, user.email, user.name, token)
+    # Same answer whether the account exists or not
+    return {"ok": True}
+
+
+@app.post("/auth/password-reset/complete")
+def password_reset_complete(b: ResetCompleteIn, db: Session = Depends(get_db)):
+    th = hashlib.sha256(b.token.encode()).hexdigest()
+    rt = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == th).first()
+    if not rt or rt.used or rt.expires_at < datetime.utcnow():
+        raise HTTPException(400, "This reset link is invalid or expired")
+    user = db.get(User, rt.user_id)
+    if not user or user.status != "active":
+        raise HTTPException(400, "This reset link is invalid or expired")
+    user.password_hash = hash_password(b.password)
+    rt.used = True
+    db.commit()
+    audit.log(db, user.id, "password_reset_completed", "user", user.id, "password changed via reset link")
     return {"ok": True}
 
 @app.get("/auth/me")

@@ -1,4 +1,4 @@
-import os
+import os, hashlib
 from datetime import datetime, timedelta
 import bcrypt
 import jwt
@@ -21,12 +21,15 @@ def hash_password(p: str) -> str:
 def check_password(p: str, h: str) -> bool:
     return bcrypt.checkpw(p.encode(), h.encode())
 
+def _pw_fingerprint(password_hash: str) -> str:
+    return hashlib.sha256(password_hash.encode()).hexdigest()[:16]
+
 
 def create_token(user: User) -> str:
     payload = {"sub": str(user.id), "role": user.role,
+               "pwd": _pw_fingerprint(user.password_hash),
                "exp": datetime.utcnow() + timedelta(hours=8)}
     return jwt.encode(payload, SECRET, algorithm="HS256")
-
 
 def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer),
                  db: Session = Depends(get_db)) -> User:
@@ -37,6 +40,8 @@ def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer),
     user = db.get(User, int(data["sub"]))
     if not user or user.status != "active":
         raise HTTPException(401, "Account not active")
+    if data.get("pwd") != _pw_fingerprint(user.password_hash):
+        raise HTTPException(401, "Session expired, please sign in again")
     return user
 
 

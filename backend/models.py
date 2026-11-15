@@ -203,3 +203,14 @@ class AuditLog(Base):
     timestamp: Mapped[str] = mapped_column(String(40))  # ISO text, so the hash is stable
     previous_hash: Mapped[str] = mapped_column(String(64))
     current_hash: Mapped[str] = mapped_column(String(64))
+    
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # SHA-256 of the token, never the token itself
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
