@@ -565,6 +565,9 @@ def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(r
          "invoice_date": inv.invoice_date}
     res, stuck = agents.run_agents(d, row(po) if po else None, row(grn) if grn else None, risk_ctx)
     rule, action, reason = agents.arbitrate(res, stuck, inv.total_amount, s["approval_limit"])
+    if was_stuck and action == "stuck":
+        action = "human_review"
+        reason = f"Retry failed. {reason} The failed agent's checks did not run, verify them manually."
 
     if "match" in res:
         m = res["match"]
@@ -591,28 +594,6 @@ def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(r
         out["voucher"] = issue_voucher(db, inv, None)
         audit.log(db, u.id, "voucher_issued", "payment", out["voucher"]["payment_id"], out["voucher"]["voucher_number"])
     return out
-
-
-class SendReviewIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    reason: str = Field(min_length=3, max_length=500)
-
-
-@app.post("/invoices/{iid}/send-to-review")
-def send_to_review(iid: int, b: SendReviewIn, db: Session = Depends(get_db),
-                   u: User = Depends(require(FO))):
-    inv = db.get(Invoice, iid)
-    if not inv or inv.processing_status != "stuck":
-        raise HTTPException(400, "Only a stuck invoice can be sent to manual review")
-    note = b.reason.strip()
-    db.add(OrchestratorDecision(invoice_id=inv.id, rule_applied="M1_manual_send_to_review",
-                                final_action="human_review",
-                                reason=f"Sent to manual review by officer because agents failed. Note: {note}"))
-    inv.processing_status = "pending_review"
-    db.commit()
-    audit.log(db, u.id, "send_to_review", "invoice", inv.id, note)
-    return {"invoice_id": inv.id, "status": inv.processing_status}
-
 
 
 def invoice_detail(db, inv):
