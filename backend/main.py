@@ -545,8 +545,9 @@ def issue_voucher(db, inv, approved_by):
 @app.post("/invoices/{iid}/process")
 def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(require(FO))):
     inv = db.get(Invoice, iid)
-    if not inv or inv.processing_status != "extracted":
+    if not inv or inv.processing_status not in ("extracted", "stuck"):
         raise HTTPException(400, "Invoice not found, or not ready (complete missing fields first)")
+    was_stuck = inv.processing_status == "stuck"
     s = get_settings(db)
     vendor = db.get(Vendor, inv.vendor_id)
     prior = db.query(Invoice).filter(Invoice.vendor_id == inv.vendor_id, Invoice.id != inv.id,
@@ -582,13 +583,36 @@ def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(r
     inv.processing_status = {"approved": "approved", "blocked": "blocked",
                              "human_review": "pending_review", "stuck": "stuck"}[action]
     db.commit()
-    audit.log(db, u.id, "process_invoice", "invoice", inv.id, f"rule={rule}; action={action}; {reason}")
+    audit.log(db, u.id, "process_invoice", "invoice", inv.id,
+              f"{'RETRY of stuck invoice; ' if was_stuck else ''}rule={rule}; action={action}; {reason}")
     out = {"invoice_id": inv.id, "status": inv.processing_status, "rule_applied": rule, "reason": reason,
            "match": res.get("match"), "tax": res.get("tax"), "risk": res.get("risk")}
     if action == "approved":
         out["voucher"] = issue_voucher(db, inv, None)
         audit.log(db, u.id, "voucher_issued", "payment", out["voucher"]["payment_id"], out["voucher"]["voucher_number"])
     return out
+
+
+class SendReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@app.post("/invoices/{iid}/send-to-review")
+def send_to_review(iid: int, b: SendReviewIn, db: Session = Depends(get_db),
+                   u: User = Depends(require(FO))):
+    inv = db.get(Invoice, iid)
+    if not inv or inv.processing_status != "stuck":
+        raise HTTPException(400, "Only a stuck invoice can be sent to manual review")
+    note = b.reason.strip()
+    db.add(OrchestratorDecision(invoice_id=inv.id, rule_applied="M1_manual_send_to_review",
+                                final_action="human_review",
+                                reason=f"Sent to manual review by officer because agents failed. Note: {note}"))
+    inv.processing_status = "pending_review"
+    db.commit()
+    audit.log(db, u.id, "send_to_review", "invoice", inv.id, note)
+    return {"invoice_id": inv.id, "status": inv.processing_status}
+
 
 
 def invoice_detail(db, inv):
