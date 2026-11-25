@@ -1,10 +1,7 @@
 // frontend/src/pages/finance/LivePages.tsx
-// Real backend-connected versions of: Process Invoice, Review Queue, Reconciliation, Reports.
-// Uses the same CSS classes as FinanceOfficerDashboard.css, so the look does not change.
 import React, { useEffect, useRef, useState } from 'react';
 import { api, downloadFile, money } from '../../utils/api';
 
-// ---------- tiny shared UI ----------
 type Tone = 'neutral' | 'success' | 'warning' | 'info';
 const Badge = ({ children, tone = 'neutral' }: { children: React.ReactNode; tone?: Tone }) => (
     <span className={`badge badge-${tone}`}>{children}</span>
@@ -32,9 +29,7 @@ const toneOf = (s: string): Tone =>
         : ['blocked', 'rejected', 'non_compliant', 'hard', 'mismatch', 'amount_mismatch'].includes(s) ? 'warning'
             : 'info';
 
-// =====================================================================
-// 1) PROCESS INVOICE  (upload -> review fields -> process -> voucher)
-// =====================================================================
+// 1) Process invoice: upload, review fields, process, voucher
 const FIELD_DEFS: [string, string, 'text' | 'date' | 'number'][] = [
     ['vendor_name', 'Supplier', 'text'],
     ['invoice_number', 'Invoice number', 'text'],
@@ -191,7 +186,9 @@ export function LiveInvoice() {
                                 <div><span className="eyebrow">Decision</span>
                                     <h3>{result.status === 'approved' ? 'Approved for payment'
                                         : result.status === 'pending_review' ? 'Sent to review queue'
-                                            : result.status === 'blocked' ? 'Blocked' : result.status}</h3></div>
+                                            : result.status === 'blocked' ? 'Blocked'
+                                                : result.status === 'stuck' ? 'Stuck, retry from the Review queue'
+                                                    : result.status}</h3></div>
                                 <Badge tone={toneOf(result.status)}>{result.status}</Badge>
                             </div>
                             <p style={{ fontSize: 13 }}>{result.reason}</p>
@@ -235,11 +232,13 @@ export function LiveInvoice() {
     );
 }
 
-// =====================================================================
-// 2) REVIEW QUEUE  (GET /review/flagged, POST /review/{id}/decision)
-// =====================================================================
+// 2) Review queue: stuck invoices (GET /invoices?status=stuck, POST /invoices/{id}/process),
+//    flagged invoices (GET /review/flagged, POST /review/{id}/decision)
 export function LiveReview() {
     const [items, setItems] = useState<any[]>([]);
+    const [stuck, setStuck] = useState<any[]>([]);
+    const [retryingId, setRetryingId] = useState<number | null>(null);
+    const [retryMsg, setRetryMsg] = useState<string | null>(null);
     const [sel, setSel] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -248,14 +247,34 @@ export function LiveReview() {
     const [reason, setReason] = useState('');
     const [busy, setBusy] = useState(false);
 
+    async function loadStuck() {
+        try { setStuck(await api('/invoices?status=stuck')); } catch (e) { setError(msg(e)); }
+    }
+
     async function load() {
         setLoading(true);
         try { setItems(await api('/review/flagged')); setSel(0); } catch (e) { setError(msg(e)); }
+        await loadStuck();
         setLoading(false);
     }
     useEffect(() => { load(); }, []);
 
     const cur = items[sel];
+
+    // R6_timeout means at least one agent failed; a failed agent has no result (null).
+    const failedAgents = cur && cur.decision?.rule_applied === 'R6_timeout'
+        ? [!cur.match && 'match', !cur.tax && 'tax', !cur.risk && 'risk'].filter(Boolean).join(', ')
+        : '';
+
+    async function retry(id: number) {
+        setRetryingId(id); setError(null); setRetryMsg(null);
+        try {
+            const r = await api(`/invoices/${id}/process`, { method: 'POST' });
+            setRetryMsg(`Invoice #${id}: ${r.status}. ${r.reason ?? ''}`);
+            await load();
+        } catch (e) { setError(msg(e)); }
+        setRetryingId(null);
+    }
 
     async function decide(decision: 'approve' | 'reject') {
         if (!cur) return;
@@ -278,6 +297,42 @@ export function LiveReview() {
             </section>
 
             <ErrorBox text={error} />
+
+            {retryMsg && (
+                <div style={{
+                    margin: '0 0 14px', padding: '10px 14px', border: '1px solid #a9c4af',
+                    background: 'var(--green-soft)', color: 'var(--green)', borderRadius: 4, fontSize: 12.5
+                }}>{retryMsg}</div>
+            )}
+
+            {stuck.length > 0 && (
+                <div className="panel" style={{ marginBottom: 16 }}>
+                    <div className="panel-heading">
+                        <div><span className="eyebrow">Needs attention</span><h3>Stuck invoices ({stuck.length})</h3></div>
+                        <Badge tone="warning">An agent failed</Badge>
+                    </div>
+                    <p style={{ fontSize: 12.5, margin: '0 0 10px' }}>
+                        These invoices could not finish processing. Press Retry. If it fails again, the invoice moves to the review queue below.
+                    </p>
+                    {stuck.map((it) => (
+                        <div key={it.id} style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            gap: 12, padding: '8px 0', borderTop: '1px solid var(--line)'
+                        }}>
+                            <span style={{ fontSize: 13 }}>
+                                <strong>{it.vendor_name ?? 'Unknown supplier'}</strong>{' '}
+                                <small style={{ color: 'var(--muted)' }}>{it.invoice_number ?? `Invoice #${it.id}`}</small>
+                            </span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <strong>{it.total_amount == null ? '-' : money(it.total_amount)}</strong>
+                                <Btn kind="primary" onClick={() => retry(it.id)} disabled={retryingId !== null}>
+                                    {retryingId === it.id ? 'Retrying...' : 'Retry'}
+                                </Btn>
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {done && (
                 <div style={{
@@ -315,6 +370,18 @@ export function LiveReview() {
                                 </div>
                                 <strong>{money(cur.total_amount)}</strong>
                             </div>
+
+                            {failedAgents && (
+                                <div role="alert" style={{
+                                    margin: '0 0 12px', padding: '10px 14px', border: '1px solid #e5b4b4',
+                                    background: '#fdf0f0', color: '#9b1c1c', borderRadius: 4, fontSize: 12.5
+                                }}>
+                                    <strong>Warning: agent(s) failed: {failedAgents}.</strong>{' '}
+                                    Their checks did not run.{' '}
+                                    {failedAgents.includes('risk') && 'Duplicate and blacklisted-vendor checks were skipped. '}
+                                    Please verify these manually before approving.
+                                </div>
+                            )}
 
                             <div className="evidence">
                                 <div className="evidence-score">{cur.risk?.risk_score ?? '-'}</div>
@@ -361,9 +428,7 @@ export function LiveReview() {
     );
 }
 
-// =====================================================================
-// 3) RECONCILIATION  (upload statement, list, dispute email)
-// =====================================================================
+// 3) Reconciliation: upload statement, list, dispute email
 export function LiveReconcile() {
     const fileRef = useRef<HTMLInputElement>(null);
     const [rows, setRows] = useState<any[]>([]);
@@ -467,9 +532,7 @@ export function LiveReconcile() {
     );
 }
 
-// =====================================================================
-// 4) REPORTS & FORECAST  (POST /reports/generate, POST /ledger)
-// =====================================================================
+// 4) Reports and forecast: POST /reports/generate, POST /ledger
 type Tab = 'Summary' | 'Profit & loss' | 'Balance sheet' | 'Forecast';
 
 export function LiveReports() {

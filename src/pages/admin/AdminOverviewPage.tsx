@@ -1,6 +1,6 @@
 // src/pages/admin/AdminOverviewPage.tsx
 // Implements Administrator Overview (SRS Table 6, Table 18, FR-OR-05, FR-UM-04, UC-7).
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AdminIcon } from './AdminIcons';
 import {
@@ -12,7 +12,31 @@ import {
   AdminServiceRow,
   AdminBarChart,
   AdminBadge,
+  AdminFeedback,
 } from './AdminUI';
+
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
+
+const getToken = () =>
+  localStorage.getItem('finagent_token') ?? sessionStorage.getItem('finagent_token') ?? '';
+
+async function getJson(path: string) {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+  if (!res.ok) throw new Error('Request failed');
+  return res.json();
+}
+
+interface UserRow { id: number; role: string; status: string }
+interface VendorRow { id: number; blacklisted: boolean }
+interface PendingRow { user_id: number; name: string; email: string; role: string; created_at: string }
+
+const ROLE_LABEL: Record<string, string> = {
+  finance_officer: 'Finance Officer',
+  auditor: 'Auditor',
+  administrator: 'Administrator',
+};
 
 export interface AdminOverviewPageProps {
   onNavigate?: (path: string) => void;
@@ -29,6 +53,34 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
   };
 
   const [activeTab, setActiveTab] = useState<'alerts' | 'actions'>('alerts');
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [vendors, setVendors] = useState<VendorRow[]>([]);
+  const [pending, setPending] = useState<PendingRow[]>([]);
+  const [loadError, setLoadError] = useState('');
+
+  const loadData = async () => {
+    try {
+      const [u, v, p] = await Promise.all([
+        getJson('/admin/users'),
+        getJson('/admin/vendors'),
+        getJson('/admin/registrations'),
+      ]);
+      setUsers(u);
+      setVendors(v);
+      setPending(p);
+      setLoadError('');
+    } catch {
+      setLoadError('Could not load overview data. Is the backend running, and are you signed in as an administrator?');
+    }
+  };
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  const activeUsers = users.filter((u) => u.status === 'active');
+  const roleCount = (r: string) => activeUsers.filter((u) => u.role === r).length;
+  const blacklistedCount = vendors.filter((v) => v.blacklisted).length;
 
   return (
     <div className="page">
@@ -36,20 +88,26 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
       <AdminPageHead
         title="Admin Overview"
         actions={
-          <AdminButton icon="refresh" onClick={() => window.location.reload()}>
+          <AdminButton icon="refresh" onClick={() => void loadData()}>
             Refresh
           </AdminButton>
         }
       />
 
+      {loadError && (
+        <div style={{ marginBottom: 16 }}>
+          <AdminFeedback tone="error">{loadError}</AdminFeedback>
+        </div>
+      )}
+
       {/* 5 KPI Cards Strictly Relevant to Admin */}
       <div className="stat-grid five">
         <AdminStatCard
-          detail="16 FO · 5 Auditor · 3 Admin"
+          detail={`${roleCount('finance_officer')} FO · ${roleCount('auditor')} Auditor · ${roleCount('administrator')} Admin`}
           icon="users"
           label="Total Users"
           onClick={() => navigate('/admin/users')}
-          value="24"
+          value={String(activeUsers.length)}
         />
         <AdminStatCard
           detail="Requires admin review"
@@ -57,15 +115,15 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
           label="Pending Registrations"
           onClick={() => navigate('/admin/users')}
           tone="warning"
-          value="2"
+          value={String(pending.length)}
         />
         <AdminStatCard
-          detail="2 blacklisted entities"
+          detail={`${blacklistedCount} blacklisted entities`}
           icon="shield"
           label="Managed Vendors"
           onClick={() => navigate('/admin/vendors')}
           tone="info"
-          value="5"
+          value={String(vendors.length)}
         />
         <AdminStatCard
           detail="FR-OR-05: 1 timeout alert"
@@ -247,7 +305,7 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
                   onClick={() => setActiveTab('actions')}
                   type="button"
                 >
-                  Registrations (2)
+                  {`Registrations (${pending.length})`}
                 </button>
               </div>
             }
@@ -277,26 +335,26 @@ export const AdminOverviewPage: React.FC<AdminOverviewPageProps> = ({ onNavigate
             </>
           ) : (
             <>
-              <div className="action-row">
-                <span className="row-symbol">
-                  <AdminIcon name="user" />
-                </span>
-                <div>
-                  <strong>Finance Officer registration request</strong>
-                  <p>Tariq Mehmood · tariq.m@enterprise.pk · Applied 2 hours ago</p>
+              {pending.length === 0 && (
+                <div className="action-row">
+                  <div>
+                    <strong>No pending registrations</strong>
+                    <p>New requests will appear here.</p>
+                  </div>
                 </div>
-                <AdminBadge tone="warning">Pending</AdminBadge>
-              </div>
-              <div className="action-row">
-                <span className="row-symbol">
-                  <AdminIcon name="user" />
-                </span>
-                <div>
-                  <strong>Auditor registration request</strong>
-                  <p>Amina Khan · amina.k@audit-services.pk · Applied yesterday</p>
+              )}
+              {pending.slice(0, 5).map((p) => (
+                <div key={p.user_id} className="action-row">
+                  <span className="row-symbol">
+                    <AdminIcon name="user" />
+                  </span>
+                  <div>
+                    <strong>{ROLE_LABEL[p.role] ?? p.role} registration request</strong>
+                    <p>{p.name} · {p.email} · {new Date(p.created_at).toLocaleDateString()}</p>
+                  </div>
+                  <AdminBadge tone="warning">Pending</AdminBadge>
                 </div>
-                <AdminBadge tone="warning">Pending</AdminBadge>
-              </div>
+              ))}
               <button
                 className="panel-link"
                 onClick={() => navigate('/admin/users')}

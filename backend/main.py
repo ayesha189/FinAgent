@@ -1,13 +1,14 @@
-import os, json
+import os, json, re, hashlib, secrets
+from datetime import date, datetime, timedelta
 from contextlib import asynccontextmanager
-from datetime import date, datetime
 from typing import Optional, Literal
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 import audit
 import agents
 from database import Base, engine, get_db, SessionLocal
@@ -89,7 +90,6 @@ class LoginIn(BaseModel):
 
 
 @app.post("/auth/login")
-@app.post("/auth/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     ident = (body.email or body.username or "").strip().lower()
     user = db.query(User).filter(User.email == ident).first()
@@ -106,12 +106,14 @@ class RegisterIn(BaseModel):
     email: str = Field(max_length=150)
     password: str = Field(min_length=8, max_length=72)
     role: Literal["finance_officer", "auditor"]
-
+    
+EMAIL_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
+NTN_PATTERN = re.compile(r"^[0-9-]{7,15}$")
 
 @app.post("/auth/register", status_code=201)
-def register(b: RegisterIn, db: Session = Depends(get_db)):
+def register(b: RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
     email = b.email.strip().lower()
-    if "@" not in email or " " in email:
+    if len(email) > 254 or not EMAIL_PATTERN.match(email):
         raise HTTPException(422, "Please enter a valid email address")
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(409, "An account with this email already exists")
@@ -120,6 +122,71 @@ def register(b: RegisterIn, db: Session = Depends(get_db)):
     db.add(nu)
     db.commit()
     audit.log(db, nu.id, "register", "user", nu.id, f"requested role={b.role}")
+
+    # Tell every active administrator (read from the database, not from the code)
+    admin_emails = [a.email for a in db.query(User)
+                    .filter(User.role == ADMIN, User.status == "active").all()]
+    if admin_emails:
+        background.add_task(send_admin_notice_email, admin_emails, nu.name, nu.email, nu.role)
+    return {"ok": True}
+
+class ResetRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str
+
+
+class ResetCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    password: str = Field(min_length=8, max_length=72)
+
+
+async def send_reset_email(to_email: str, name: str, token: str):
+    link = os.getenv("FRONTEND_URL", "http://localhost:3000") + f"/reset-password?token={token}"
+    body = (f"Hello {name},\n\n"
+            f"We received a request to reset your FinAgent password.\n"
+            f"Click the link below to choose a new password. It works once and expires in 30 minutes.\n\n"
+            f"{link}\n\n"
+            f"If you did not ask for this, you can ignore this email. Your password will not change.\n\n"
+            f"Regards,\nFinAgent Team")
+    await _send_mail([to_email], "Reset your FinAgent password", body)
+
+
+@app.post("/auth/password-reset/request")
+def password_reset_request(b: ResetRequestIn, background: BackgroundTasks,
+                           db: Session = Depends(get_db)):
+    email = b.email.strip().lower()
+    user = db.query(User).filter(User.email == email, User.status == "active").first()
+    if user:
+        # Cancel older unused links, then create a new one
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used.is_(False)).update({"used": True})
+        token = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(
+            user_id=user.id,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expires_at=datetime.utcnow() + timedelta(minutes=30)))
+        db.commit()
+        audit.log(db, user.id, "password_reset_requested", "user", user.id, "reset link emailed")
+        background.add_task(send_reset_email, user.email, user.name, token)
+    # Same answer whether the account exists or not
+    return {"ok": True}
+
+
+@app.post("/auth/password-reset/complete")
+def password_reset_complete(b: ResetCompleteIn, db: Session = Depends(get_db)):
+    th = hashlib.sha256(b.token.encode()).hexdigest()
+    rt = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == th).first()
+    if not rt or rt.used or rt.expires_at < datetime.utcnow():
+        raise HTTPException(400, "This reset link is invalid or expired")
+    user = db.get(User, rt.user_id)
+    if not user or user.status != "active":
+        raise HTTPException(400, "This reset link is invalid or expired")
+    user.password_hash = hash_password(b.password)
+    rt.used = True
+    db.commit()
+    audit.log(db, user.id, "password_reset_completed", "user", user.id, "password changed via reset link")
     return {"ok": True}
 
 @app.get("/auth/me")
@@ -173,6 +240,91 @@ def patch_user(uid: int, b: UserPatch, db: Session = Depends(get_db), u: User = 
     audit.log(db, u.id, "update_user", "user", uid, b.model_dump_json(exclude={"password"}))
     return {"ok": True}
 
+class DecisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approve", "reject"]
+    role: Optional[Literal["finance_officer", "auditor"]] = None
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@app.get("/admin/registrations")
+def pending_registrations(db: Session = Depends(get_db), u: User = Depends(require(ADMIN))):
+    users = db.query(User).filter(User.status == "pending").order_by(User.id).all()
+    return [{"user_id": x.id, "name": x.name, "email": x.email, "role": x.role,
+             "created_at": x.created_at} for x in users]
+    
+def _mail_conf():
+    return ConnectionConfig(
+        MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
+        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
+        MAIL_FROM=os.getenv("MAIL_FROM", ""),
+        MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com"),
+        MAIL_PORT=int(os.getenv("MAIL_PORT", "587")),
+        MAIL_STARTTLS=True,
+        MAIL_SSL_TLS=False,
+        USE_CREDENTIALS=True,
+    )
+
+
+async def _send_mail(recipients: list, subject: str, body: str):
+    """One place that sends mail. A failure is only printed, it never blocks the request."""
+    try:
+        message = MessageSchema(subject=subject, recipients=recipients, body=body,
+                                subtype=MessageType.plain)
+        await FastMail(_mail_conf()).send_message(message)
+    except Exception as e:
+        print(f"[mail] could not send email to {recipients}: {e}")
+
+
+async def send_decision_email(to_email: str, name: str, decision: str, role: str,
+                              reason: Optional[str] = None):
+    if decision == "approve":
+        subject = "Your FinAgent account has been approved"
+        body = (f"Hello {name},\n\n"
+                f"Your FinAgent registration has been approved. "
+                f"You can now sign in as {role.replace('_', ' ').title()}.\n\n"
+                f"Regards,\nFinAgent Team")
+    else:
+        subject = "Your FinAgent registration was not approved"
+        reason_line = f"Reason given by the administrator: {reason}\n\n" if reason else ""
+        body = (f"Hello {name},\n\n"
+                f"Your FinAgent registration was not approved by the administrator.\n\n"
+                f"{reason_line}"
+                f"Please contact your administrator if you think this is a mistake.\n\n"
+                f"Regards,\nFinAgent Team")
+    await _send_mail([to_email], subject, body)
+
+async def send_admin_notice_email(admin_emails: list, name: str, email: str, role: str):
+    link = os.getenv("FRONTEND_URL", "http://localhost:3000") + "/admin/registrations"
+    subject = "New FinAgent registration waiting for approval"
+    body = (f"Hello,\n\n"
+            f"A new registration is waiting for your approval.\n\n"
+            f"Name: {name}\n"
+            f"Email: {email}\n"
+            f"Requested role: {role.replace('_', ' ').title()}\n\n"
+            f"Review it here: {link}\n\n"
+            f"Regards,\nFinAgent System")
+    await _send_mail(admin_emails, subject, body)
+        
+@app.patch("/admin/registrations/{uid}")
+def decide_registration(uid: int, b: DecisionBody, background: BackgroundTasks,
+                        db: Session = Depends(get_db),
+                        u: User = Depends(require(ADMIN))):
+    t = db.get(User, uid)
+    if not t or t.status != "pending":
+        raise HTTPException(404, "No pending registration with this id")
+    if b.decision == "approve":
+        if b.role:
+            t.role = b.role
+        t.status = "active"
+    else:
+        t.status = "rejected"
+    db.commit()
+    reason = b.reason.strip() if (b.decision == "reject" and b.reason and b.reason.strip()) else None
+    detail = f"{t.email} | reason: {reason}" if reason else t.email
+    audit.log(db, u.id, f"registration_{b.decision}", "user", uid, detail)
+    background.add_task(send_decision_email, t.email, t.name, b.decision, t.role, reason)
+    return {"user_id": uid, "status": t.status}
 
 @app.get("/admin/settings")
 def read_settings(db: Session = Depends(get_db), u: User = Depends(require(ADMIN, FO))):
@@ -206,9 +358,29 @@ def list_vendors(db: Session = Depends(get_db), u: User = Depends(require(ADMIN,
 
 @app.post("/admin/vendors")
 def add_vendor(b: VendorIn, db: Session = Depends(get_db), u: User = Depends(require(ADMIN))):
-    v = Vendor(**b.model_dump())
+    name = (b.name or "").strip()
+    ntn = (b.tax_number or "").strip()
+    email = (b.contact_email or "").strip().lower()
+
+    # All three fields are required
+    if not name or not ntn or not email:
+        raise HTTPException(422, "Vendor name, NTN and accounts email are all required")
+    if not NTN_PATTERN.match(ntn):
+        raise HTTPException(422, "Please enter a valid NTN, for example 1234567-8")
+    if len(email) > 150 or not EMAIL_PATTERN.match(email):
+        raise HTTPException(422, "Please enter a valid accounts email")
+
+    # No duplicates: name and email are compared ignoring upper/lower case
+    if db.query(Vendor).filter(func.lower(Vendor.name) == name.lower()).first():
+        raise HTTPException(409, "A vendor with this name already exists")
+    if db.query(Vendor).filter(Vendor.tax_number == ntn).first():
+        raise HTTPException(409, "A vendor with this NTN already exists")
+    if db.query(Vendor).filter(func.lower(Vendor.contact_email) == email).first():
+        raise HTTPException(409, "A vendor with this email already exists")
+
+    v = Vendor(name=name, tax_number=ntn, contact_email=email, blacklisted=b.blacklisted)
     db.add(v); db.commit()
-    audit.log(db, u.id, "create_vendor", "vendor", v.id, b.name)
+    audit.log(db, u.id, "create_vendor", "vendor", v.id, name)
     return row(v)
 
 
@@ -217,6 +389,24 @@ def patch_vendor(vid: int, b: dict, db: Session = Depends(get_db), u: User = Dep
     v = db.get(Vendor, vid)
     if not v:
         raise HTTPException(404, "Vendor not found")
+
+    if "tax_number" in b:
+        ntn = str(b["tax_number"] or "").strip()
+        if not NTN_PATTERN.match(ntn):
+            raise HTTPException(422, "Please enter a valid NTN, for example 1234567-8")
+        if db.query(Vendor).filter(Vendor.tax_number == ntn, Vendor.id != vid).first():
+            raise HTTPException(409, "A vendor with this NTN already exists")
+        b["tax_number"] = ntn
+    if "contact_email" in b:
+        email = str(b["contact_email"] or "").strip().lower()
+        if len(email) > 150 or not EMAIL_PATTERN.match(email):
+            raise HTTPException(422, "Please enter a valid accounts email")
+        if db.query(Vendor).filter(func.lower(Vendor.contact_email) == email, Vendor.id != vid).first():
+            raise HTTPException(409, "A vendor with this email already exists")
+        b["contact_email"] = email
+    if "blacklisted" in b and not isinstance(b["blacklisted"], bool):
+        raise HTTPException(422, "blacklisted must be true or false")
+
     for k in ("tax_number", "contact_email", "blacklisted"):
         if k in b:
             setattr(v, k, b[k])
@@ -355,8 +545,9 @@ def issue_voucher(db, inv, approved_by):
 @app.post("/invoices/{iid}/process")
 def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(require(FO))):
     inv = db.get(Invoice, iid)
-    if not inv or inv.processing_status != "extracted":
+    if not inv or inv.processing_status not in ("extracted", "stuck"):
         raise HTTPException(400, "Invoice not found, or not ready (complete missing fields first)")
+    was_stuck = inv.processing_status == "stuck"
     s = get_settings(db)
     vendor = db.get(Vendor, inv.vendor_id)
     prior = db.query(Invoice).filter(Invoice.vendor_id == inv.vendor_id, Invoice.id != inv.id,
@@ -374,6 +565,9 @@ def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(r
          "invoice_date": inv.invoice_date}
     res, stuck = agents.run_agents(d, row(po) if po else None, row(grn) if grn else None, risk_ctx)
     rule, action, reason = agents.arbitrate(res, stuck, inv.total_amount, s["approval_limit"])
+    if was_stuck and action == "stuck":
+        action = "human_review"
+        reason = f"Retry failed. {reason} The failed agent's checks did not run, verify them manually."
 
     if "match" in res:
         m = res["match"]
@@ -392,7 +586,8 @@ def process_invoice(iid: int, db: Session = Depends(get_db), u: User = Depends(r
     inv.processing_status = {"approved": "approved", "blocked": "blocked",
                              "human_review": "pending_review", "stuck": "stuck"}[action]
     db.commit()
-    audit.log(db, u.id, "process_invoice", "invoice", inv.id, f"rule={rule}; action={action}; {reason}")
+    audit.log(db, u.id, "process_invoice", "invoice", inv.id,
+              f"{'RETRY of stuck invoice; ' if was_stuck else ''}rule={rule}; action={action}; {reason}")
     out = {"invoice_id": inv.id, "status": inv.processing_status, "rule_applied": rule, "reason": reason,
            "match": res.get("match"), "tax": res.get("tax"), "risk": res.get("risk")}
     if action == "approved":

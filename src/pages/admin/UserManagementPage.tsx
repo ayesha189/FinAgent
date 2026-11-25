@@ -29,6 +29,7 @@ const complaintRecipientLabels: Record<ComplaintRecord['recipient'], string> = {
 
 export interface SystemUser {
   id: string;
+  dbId?: number;
   name: string;
   initials: string;
   email: string;
@@ -38,71 +39,26 @@ export interface SystemUser {
   login: string;
 }
 
-const INITIAL_USERS: SystemUser[] = [
-  {
-    id: 'USR-001',
-    name: 'Muhammad Aslam',
-    initials: 'MA',
-    email: 'm.aslam@finagent.pk',
-    role: 'Finance Officer',
-    status: 'Active',
-    registered: '04 Jan 2026',
-    login: 'Today, 08:42',
-  },
-  {
-    id: 'USR-002',
-    name: 'Zainab Fatima (Lead Auditor)',
-    initials: 'ZF',
-    email: 'zainab.audit@external-audit.pk',
-    role: 'Auditor',
-    status: 'Active',
-    registered: '18 Feb 2026',
-    login: 'Yesterday, 16:20',
-  },
-  {
-    id: 'USR-003',
-    name: 'System Administrator',
-    initials: 'SA',
-    email: 'admin@finagent.pk',
-    role: 'Administrator',
-    status: 'Active',
-    registered: '02 Jan 2026',
-    login: 'Now',
-  },
-  {
-    id: 'USR-004',
-    name: 'Bilal Ahmed',
-    initials: 'BA',
-    email: 'bilal.ahmed@finagent.pk',
-    role: 'Finance Officer',
-    status: 'Blocked',
-    registered: '22 Mar 2026',
-    login: '31 May, 09:14',
-  },
-  {
-    id: 'USR-005',
-    name: 'Tariq Mehmood',
-    initials: 'TM',
-    email: 'tariq.m@enterprise.pk',
-    role: 'Finance Officer',
-    status: 'Pending',
-    registered: '15 Oct 2026',
-    login: 'Pending activation',
-  },
-  {
-    id: 'USR-006',
-    name: 'Amina Khan',
-    initials: 'AK',
-    email: 'amina.k@audit-services.pk',
-    role: 'Auditor',
-    status: 'Pending',
-    registered: '14 Oct 2026',
-    login: 'Pending activation',
-  },
-];
+const ROLE_FROM_API: Record<string, SystemUser['role']> = {
+  finance_officer: 'Finance Officer',
+  auditor: 'Auditor',
+  administrator: 'Administrator',
+};
+
+const ROLE_TO_API: Record<SystemUser['role'], string> = {
+  'Finance Officer': 'finance_officer',
+  Auditor: 'auditor',
+  Administrator: 'administrator',
+};
+
+const STATUS_FROM_API: Record<string, SystemUser['status']> = {
+  active: 'Active',
+  blocked: 'Blocked',
+  pending: 'Pending',
+};
 
 export const UserManagementPage: React.FC = () => {
-  const [users, setUsers] = useState<SystemUser[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<SystemUser[]>([]);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('All roles');
   const [statusFilter, setStatusFilter] = useState('All statuses');
@@ -112,11 +68,50 @@ export const UserManagementPage: React.FC = () => {
   const [complaints, setComplaints] = useState<ComplaintRecord[]>(readLocalComplaints);
   const [complaintsNotice, setComplaintsNotice] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [modalError, setModalError] = useState('');
   const [newUser, setNewUser] = useState({
     name: '',
     email: '',
+    password: '',
     role: 'Finance Officer' as SystemUser['role'],
   });
+
+  const loadUsers = async () => {
+    try {
+      const token = localStorage.getItem('finagent_token') ?? sessionStorage.getItem('finagent_token') ?? '';
+      const res = await fetch(`${API_URL}/admin/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Request failed');
+      const data = await res.json();
+      setUsers(
+        data
+          .filter((u: { status: string }) => STATUS_FROM_API[u.status])
+          .map((u: { id: number; name: string; email: string; role: string; status: string; created_at: string }) => ({
+            id: `USR-${String(u.id).padStart(3, '0')}`,
+            dbId: u.id,
+            name: u.name,
+            initials: u.name
+              .split(' ')
+              .map((p) => p[0])
+              .slice(0, 2)
+              .join('')
+              .toUpperCase(),
+            email: u.email,
+            role: ROLE_FROM_API[u.role] ?? 'Finance Officer',
+            status: STATUS_FROM_API[u.status],
+            registered: new Date(u.created_at).toLocaleDateString(),
+            login: u.status === 'pending' ? 'Pending activation' : '—',
+          })),
+      );
+    } catch {
+      setFeedback('Could not load users. Is the backend running, and are you signed in as an administrator?');
+    }
+  };
+
+  useEffect(() => {
+    void loadUsers();
+  }, []);
 
   const pendingApprovals = users.filter((u) => u.status === 'Pending');
 
@@ -197,53 +192,79 @@ export const UserManagementPage: React.FC = () => {
   const auditorCount = users.filter((u) => u.role === 'Auditor' && u.status === 'Active').length;
   const adminCount = users.filter((u) => u.role === 'Administrator').length;
 
-  const handleToggleBlock = (email: string, currentStatus: SystemUser['status']) => {
-    const nextStatus: SystemUser['status'] = currentStatus === 'Active' ? 'Blocked' : 'Active';
-    const updated: SystemUser[] = users.map((u) => (u.email === email ? { ...u, status: nextStatus } : u));
-    setUsers(updated);
-    setFeedback(
-      `Account ${email} is now ${nextStatus}. Change logged to the hash-chained audit trail (UC-7 alt flow).`
-    );
+  const callApi = async (path: string, method: string, body: object) => {
+    const token = localStorage.getItem('finagent_token') ?? sessionStorage.getItem('finagent_token') ?? '';
+    const res = await fetch(`${API_URL}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : 'Request failed');
+    }
   };
 
-  const handleApprove = (email: string) => {
-    const updated = users.map((u) => (u.email === email ? { ...u, status: 'Active' as const } : u));
-    setUsers(updated);
-    setFeedback(`Registration for ${email} approved. User can now authenticate via JWT (FR-UM-01).`);
+  const handleToggleBlock = async (email: string, currentStatus: SystemUser['status']) => {
+    const target = users.find((u) => u.email === email);
+    if (!target?.dbId) return;
+    const next = currentStatus === 'Active' ? 'blocked' : 'active';
+    try {
+      await callApi(`/admin/users/${target.dbId}`, 'PATCH', { status: next });
+      await loadUsers();
+      setFeedback(`Account ${email} is now ${next}. The change is saved and written to the audit log.`);
+    } catch (e) {
+      setFeedback(`Could not update ${email}: ${(e as Error).message}`);
+    }
   };
 
-  const handleReject = (email: string) => {
-    const updated = users.filter((u) => u.email !== email);
-    setUsers(updated);
-    setRejectEmail(null);
-    setFeedback(`Registration for ${email} rejected. Reason: "${rejectReason || 'Administrative decision'}".`);
-    setRejectReason('');
+  const handleApprove = async (email: string) => {
+    const target = users.find((u) => u.email === email);
+    if (!target?.dbId) return;
+    try {
+      await callApi(`/admin/registrations/${target.dbId}`, 'PATCH', { decision: 'approve' });
+      await loadUsers();
+      setFeedback(`Registration for ${email} approved. They can sign in now.`);
+    } catch (e) {
+      setFeedback(`Could not approve ${email}: ${(e as Error).message}`);
+    }
   };
 
-  const handleCreateUser = (e: React.FormEvent) => {
+  const handleReject = async (email: string) => {
+    const target = users.find((u) => u.email === email);
+    if (!target?.dbId) return;
+    try {
+            await callApi(`/admin/registrations/${target.dbId}`, 'PATCH', {
+        decision: 'reject',
+        reason: rejectReason.trim() || undefined,
+      });
+      await loadUsers();
+      setRejectEmail(null);
+      setRejectReason('');
+      setFeedback(`Registration for ${email} rejected. They will see that it was not approved.`);
+    } catch (e) {
+      setFeedback(`Could not reject ${email}: ${(e as Error).message}`);
+    }
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUser.name || !newUser.email) return;
-
-    const created: SystemUser = {
-      id: `USR-00${users.length + 1}`,
-      name: newUser.name,
-      initials: newUser.name
-        .split(' ')
-        .map((p) => p[0])
-        .slice(0, 2)
-        .join('')
-        .toUpperCase(),
-      email: newUser.email,
-      role: newUser.role,
-      status: 'Active',
-      registered: 'Today',
-      login: 'Not yet logged in',
-    };
-
-    setUsers([created, ...users]);
-    setShowAddModal(false);
-    setNewUser({ name: '', email: '', role: 'Finance Officer' });
-    setFeedback(`User ${created.name} (${created.role}) created and activated successfully (FR-UM-04).`);
+    if (!newUser.name || !newUser.email || !newUser.password) return;
+    setModalError('');
+    try {
+      await callApi('/admin/users', 'POST', {
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        role: ROLE_TO_API[newUser.role],
+      });
+      await loadUsers();
+      setShowAddModal(false);
+      setNewUser({ name: '', email: '', password: '', role: 'Finance Officer' });
+      setFeedback(`User ${newUser.name} (${newUser.role}) created and activated successfully (FR-UM-04).`);
+    } catch (err) {
+        setModalError(`Could not create user: ${(err as Error).message}`);
+    }
   };
 
   return (
@@ -252,7 +273,7 @@ export const UserManagementPage: React.FC = () => {
       <AdminPageHead
         title="User Management & Role Permissions"
         actions={
-          <AdminButton icon="plus" kind="primary" onClick={() => setShowAddModal(true)}>
+            <AdminButton icon="plus" kind="primary" onClick={() => { setModalError(''); setShowAddModal(true); }}>
             Create User Account
           </AdminButton>
         }
@@ -293,9 +314,11 @@ export const UserManagementPage: React.FC = () => {
         />
       </div>
 
-      {feedback && (
+            {feedback && (
         <div style={{ marginBottom: 16 }}>
-          <AdminFeedback tone="success">{feedback}</AdminFeedback>
+          <AdminFeedback tone={feedback.startsWith('Could not') ? 'error' : 'success'}>
+            {feedback}
+          </AdminFeedback>
         </div>
       )}
 
@@ -501,6 +524,11 @@ export const UserManagementPage: React.FC = () => {
               Provision a new account with role-based access. Passwords are encrypted with bcrypt
               and authenticated via JWT (FR-UM-01).
             </p>
+              {modalError && (
+              <div style={{ marginTop: 12 }}>
+                <AdminFeedback tone="error">{modalError}</AdminFeedback>
+              </div>
+            )}
             <form onSubmit={handleCreateUser} style={{ marginTop: 14 }}>
               <div className="form-grid" style={{ padding: 0 }}>
                 <label className="field full">
@@ -524,6 +552,17 @@ export const UserManagementPage: React.FC = () => {
                   />
                 </label>
                 <label className="field full">
+                  <span>Temporary Password *</span>
+                  <input
+                    required
+                    minLength={8}
+                    placeholder="At least 8 characters"
+                    type="password"
+                    value={newUser.password}
+                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  />
+                </label>
+                <label className="field full">
                   <span>Assigned System Role (Table 18)</span>
                   <select
                     value={newUser.role}
@@ -538,7 +577,7 @@ export const UserManagementPage: React.FC = () => {
                 </label>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-                <AdminButton onClick={() => setShowAddModal(false)}>Cancel</AdminButton>
+                <AdminButton onClick={() => { setShowAddModal(false); setModalError(''); }}>Cancel</AdminButton>
                 <AdminButton kind="primary" type="submit">
                   Create User
                 </AdminButton>
